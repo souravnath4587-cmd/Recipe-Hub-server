@@ -44,6 +44,58 @@ async function run() {
 
     // recipes api related
 
+    app.put("/api/myRecipes/:id", async (req, res) => {
+      try {
+        const id = req.params.id.trim();
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid ID format." });
+        }
+
+        const filter = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: {
+            recipeName: req.body.recipeName,
+            recipeImage: req.body.recipeImage,
+            category: req.body.category,
+            cuisineType: req.body.cuisineType,
+            difficultyLevel: req.body.difficultyLevel,
+            preparationTime: req.body.preparationTime,
+            ingredients: req.body.ingredients,
+            instructions: req.body.instructions,
+          },
+        };
+
+        const result = await recipeCollection.updateOne(filter, updatedDoc);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({
+          error: "Server error encountered updating document entries",
+        });
+      }
+    });
+
+    app.get("/api/myRecipe/:id", async (req, res) => {
+      try {
+        const id = req.params.id.trim();
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({
+            message: "Invalied..",
+          });
+        } else {
+          const query = {
+            _id: new ObjectId(id),
+          };
+          const result = await recipeCollection.findOne(query);
+          res.send(result);
+        }
+      } catch (error) {
+        res
+          .status(500)
+          .send({ error: "Failed to fetch recipes from database" });
+      }
+    });
+
     app.delete("/api/myRecipes/:id", async (req, res) => {
       try {
         const id = req.params.id.trim();
