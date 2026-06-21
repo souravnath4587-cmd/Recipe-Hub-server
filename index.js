@@ -41,8 +41,65 @@ async function run() {
     const authDatabase = authClient.db("RecipeHub-Auth");
 
     const recipeCollection = database.collection("recipes");
+    const userCollection = authDatabase.collection("user");
+
+    // users related api
+    app.get("/api/users", async (req, res) => {
+      const result = await userCollection.find().toArray();
+      res.send(result);
+    });
+
+    app.patch("/api/users/:id/status", async (req, res) => {
+      const { id } = req.params;
+      const newStatusValue = req.body.status;
+      const query = {
+        _id: new ObjectId(id),
+      };
+      const result = await userCollection.updateOne(query, {
+        $set: {
+          status: newStatusValue,
+        },
+      });
+      res.send(result);
+    });
 
     // recipes api related
+
+    app.patch("/api/recipes/:id/vote", async (req, res) => {
+      const { id } = req.params;
+      const { direction } = req.body; // Expects a string payload: "up" or "down"
+
+      try {
+        const query = { _id: new ObjectId(id) };
+
+        // Set modifier mathematically based on direction value
+        let mathematicalModifier = 0;
+        if (direction === "up") mathematicalModifier = 1;
+        if (direction === "down") mathematicalModifier = -1;
+
+        // Apply change natively inside your existing recipes document
+        const result = await recipeCollection.updateOne(query, {
+          $inc: {
+            likesCount: mathematicalModifier, // Positive increments, negative decrements
+          },
+        });
+
+        // Fetch the updated value to return to the UI
+        const updatedRecipe = await recipeCollection.findOne(query);
+
+        res.status(200).json({
+          success: true,
+          likesCount: updatedRecipe.likesCount || 0,
+        });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.get("/api/allRecipes", async (req, res) => {
+      const result = await recipeCollection.find().toArray();
+      res.send(result);
+    });
 
     app.put("/api/myRecipes/:id", async (req, res) => {
       try {
