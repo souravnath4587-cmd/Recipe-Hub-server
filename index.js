@@ -47,6 +47,30 @@ async function run() {
     const subscriptionCollection = database.collection("subscriptions");
     const paymentsCollection = database.collection("payments");
 
+    //subcription related
+    app.post("/api/subscriptions", async (req, res) => {
+      const data = req.body;
+      const subsInfo = {
+        ...data,
+        createdAt: new Date(),
+      };
+
+      // update the user plan information
+      const filter = { email: data.email };
+      // update the value of the 'quantity' field to 5
+      const updateDocument = {
+        $set: {
+          plan: data.planId,
+        },
+      };
+
+      const updateResult = await userCollection.updateOne(
+        filter,
+        updateDocument,
+      );
+      res.send(updateResult);
+    });
+
     //plans related
     app.get("/api/plans", async (req, res) => {
       const query = {};
