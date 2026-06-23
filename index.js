@@ -47,6 +47,12 @@ async function run() {
     const subscriptionCollection = database.collection("subscriptions");
     const paymentsCollection = database.collection("payments");
 
+    // Payments related :
+    app.get("/api/payments", async (req, res) => {
+      const result = await paymentsCollection.find().toArray();
+      res.json(result);
+    });
+
     // Express Server Route (e.g., in your server.js or routes file)
     app.post("/api/payments/checkout", async (req, res) => {
       try {
