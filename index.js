@@ -43,6 +43,141 @@ async function run() {
     const recipeCollection = database.collection("recipes");
     const userCollection = authDatabase.collection("user");
     const reportCollection = database.collection("reports");
+    const planCollection = database.collection("plans");
+    const subscriptionCollection = database.collection("subscriptions");
+    const paymentsCollection = database.collection("payments");
+
+    // Payments related :
+    app.get("/api/payments", async (req, res) => {
+      const result = await paymentsCollection.find().toArray();
+      res.json(result);
+    });
+
+    // Express Server Route (e.g., in your server.js or routes file)
+    app.post("/api/payments/checkout", async (req, res) => {
+      try {
+        const { userId, userEmail, recipeId, transactionId, userPlan } =
+          req.body;
+
+        // 1. Block Free Users immediately
+        if (!userPlan || userPlan === "user_free") {
+          return res.status(403).json({
+            success: false,
+            message:
+              "Free users cannot buy single recipes. Please upgrade your core plan.",
+          });
+        }
+
+        // 2. Count how many single recipes this user has already bought
+        const purchasedCount = await paymentsCollection.countDocuments({
+          userId: userId,
+          paymentStatus: "succeeded",
+        });
+
+        // 3. Enforce Tier Limits
+        if (userPlan === "user_pro" && purchasedCount >= 5) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "Pro tier individual purchase cap reached (Max 5). Upgrade to Premium for a higher allocation.",
+          });
+        }
+
+        if (userPlan === "user_premium" && purchasedCount >= 20) {
+          return res.status(403).json({
+            success: false,
+            message:
+              "Premium tier single recipe purchase limit reached (Max 20).",
+          });
+        }
+
+        // 4. Record the approved transaction item
+        const paymentRecord = {
+          userId,
+          userEmail,
+          recipeId,
+          transactionId, // Provided by your payment gateway (like Stripe)
+          paymentStatus: "succeeded",
+          paidAt: new Date(),
+        };
+
+        const result = await paymentsCollection.insertOne(paymentRecord);
+
+        return res.status(201).json({
+          success: true,
+          message: "Recipe purchase successfully authorized!",
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Payment registration error:", error);
+        return res
+          .status(500)
+          .json({ success: false, error: "Internal server error" });
+      }
+    });
+
+    //subcription related
+    app.post("/api/subscriptions", async (req, res) => {
+      const data = req.body;
+      const subsInfo = {
+        ...data,
+        createdAt: new Date(),
+      };
+
+      // update the user plan information
+      const filter = { email: data.email };
+      // update the value of the 'quantity' field to 5
+      const updateDocument = {
+        $set: {
+          plan: data.planId,
+        },
+      };
+
+      const updateResult = await userCollection.updateOne(
+        filter,
+        updateDocument,
+      );
+      res.send(updateResult);
+    });
+
+    //plans related
+    app.get("/api/plans", async (req, res) => {
+      const query = {};
+      if (req.query.plan_id) {
+        query.id = req.query.plan_id;
+      }
+      const plan = await planCollection.findOne(query);
+      res.send(plan);
+    });
+
+    // Admin related api
+    app.patch("/api/recipes/:id/feature", async (req, res) => {
+      const { id } = await req.params;
+      try {
+        const query = {
+          _id: new ObjectId(id),
+        };
+        const recipe = recipeCollection.findOne(query);
+        if (!recipe) {
+          return res.status(401).json({ error: "Recipe not found.." });
+        }
+        const featureState = !recipe.isFeatured;
+        await recipeCollection.updateOne(query, {
+          $set: {
+            isFeatured: featureState,
+          },
+        });
+        res.status(200).json({
+          success: true,
+          message: "Your feature request has been successfully added.",
+          isFeatured: featureState,
+        });
+      } catch (error) {
+        res.status(500).json({
+          error: error.message,
+        });
+      }
+    });
 
     // users related api
     app.get("/api/users", async (req, res) => {
@@ -65,6 +200,19 @@ async function run() {
     });
 
     // recipes api related
+    app.delete("/api/reports/:id", async (req, res) => {
+      const { id } = await req.params;
+      const query = {
+        _id: new ObjectId(id),
+      };
+      const result = await reportCollection.deleteOne(query);
+      res.send(result);
+    });
+
+    app.get("/api/reports", async (req, res) => {
+      const result = await reportCollection.find().toArray();
+      res.send(result);
+    });
 
     app.post("/api/reports", async (req, res) => {
       const { recipeId, userId, reason, details } = req.body;
