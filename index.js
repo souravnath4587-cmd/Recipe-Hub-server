@@ -42,6 +42,7 @@ async function run() {
 
     const recipeCollection = database.collection("recipes");
     const userCollection = authDatabase.collection("user");
+    const reportCollection = database.collection("reports");
 
     // users related api
     app.get("/api/users", async (req, res) => {
@@ -64,6 +65,93 @@ async function run() {
     });
 
     // recipes api related
+
+    app.post("/api/reports", async (req, res) => {
+      const { recipeId, userId, reason, details } = req.body;
+
+      // Validation
+      if (!recipeId || !userId || !reason) {
+        return res
+          .status(400)
+          .json({ error: "Missing required reporting fields." });
+      }
+
+      const validReasons = ["Spam", "Offensive Content", "Copyright Issue"];
+      if (!validReasons.includes(reason)) {
+        return res
+          .status(400)
+          .json({ error: "Invalid reporting reason classification." });
+      }
+
+      try {
+        const reportDocument = {
+          recipeId: new ObjectId(recipeId),
+          userId: userId,
+          reason: reason,
+          details: details || "",
+          createdAt: new Date(),
+          status: "Pending Review", // Useful for your admin dashboard later
+        };
+
+        const result = await reportCollection.insertOne(reportDocument);
+
+        res.status(201).json({
+          success: true,
+          message: "Report logged successfully into administration pipelines.",
+          reportId: result.insertedId,
+        });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    app.patch("/api/recipes/:id/favourite", async (req, res) => {
+      const { id } = req.params;
+      const { userId } = req.body;
+      if (!userId) {
+        return res
+          .status(401)
+          .json({ error: "Unauthorized access token missing." });
+      }
+      try {
+        const query = {
+          _id: new ObjectId(id),
+        };
+        const recipe = await recipeCollection.findOne(query);
+        if (!recipe) {
+          return res.status(404).json({ error: "Recipe not found." });
+        }
+        const favourite = recipe.favourite || [];
+        const isAlreadyFavourite = favourite.includes(userId);
+        let updateOperator;
+        if (isAlreadyFavourite) {
+          updateOperator = { $pull: { favourite: userId } };
+        } else {
+          updateOperator = {
+            $addToSet: {
+              favourite: userId,
+            },
+          };
+        }
+
+        await recipeCollection.updateOne(query, updateOperator);
+        const updateRecipe = await recipeCollection.findOne(query);
+        const favouriteArray = updateRecipe.favourite || [];
+        const absoluteCountAsNumber = favouriteArray.length; // Raw standard number
+
+        // 3. Store that definitive numerical length directly back into your field
+        await recipeCollection.updateOne(query, {
+          $set: { favouritesCount: absoluteCountAsNumber },
+        });
+        res.status(200).json({
+          success: true,
+          favoritesCount: favouriteArray.length,
+          isFavourited: favouriteArray.includes(userId),
+        });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
 
     app.patch("/api/recipes/:id/vote", async (req, res) => {
       const { id } = req.params;
