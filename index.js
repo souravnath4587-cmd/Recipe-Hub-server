@@ -12,6 +12,13 @@ app.use(cors());
 app.use(express.json());
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
+// const verifyToken = (req, res, next) => {
+//   console.log("header", req.headers);
+
+//   next();
+// };
+
 const uri = process.env.MONGODB_DATA_URI;
 const authUri = process.env.MONGODB_AUTH_URI;
 
@@ -46,75 +53,134 @@ async function run() {
     const planCollection = database.collection("plans");
     const subscriptionCollection = database.collection("subscriptions");
     const paymentsCollection = database.collection("payments");
+    const sessionCollection = authDatabase.collection("session");
+
+    // verification related
+    const verifyToken = async (req, res, next) => {
+      const authHeader = req.headers?.authorization;
+      if (!authHeader) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      const token = authHeader.split(" ")[1];
+
+      if (!token) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      const query = { token: token };
+      const session = await sessionCollection.findOne(query);
+
+      if (!session) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      const userId = session.userId;
+
+      const userQuery = {
+        _id: userId,
+      };
+
+      const user = await userCollection.findOne(userQuery);
+      if (!user) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+      // set data in the req object
+      console.log("user", user);
+
+      req.user = user;
+      next();
+    };
+
+    // must be used after verifyToken middleware
+    const verifyUser = async (req, res, next) => {
+      if (req.user?.role !== "user") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
+
+    // must be used after verifyToken middleware
+    const verifyAdmin = async (req, res, next) => {
+      if (req.user?.role !== "admin") {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      next();
+    };
 
     // Payments related :
-    app.get("/api/payments", async (req, res) => {
+    app.get("/api/payments", verifyToken, verifyUser, async (req, res) => {
       const result = await paymentsCollection.find().toArray();
       res.json(result);
     });
 
     // Express Server Route (e.g., in your server.js or routes file)
-    app.post("/api/payments/checkout", async (req, res) => {
-      try {
-        const { userId, userEmail, recipeId, transactionId, userPlan } =
-          req.body;
+    app.post(
+      "/api/payments/checkout",
+      verifyToken,
+      verifyUser,
+      async (req, res) => {
+        try {
+          const { userId, userEmail, recipeId, transactionId, userPlan } =
+            req.body;
 
-        // 1. Block Free Users immediately
-        if (!userPlan || userPlan === "user_free") {
-          return res.status(403).json({
-            success: false,
-            message:
-              "Free users cannot buy single recipes. Please upgrade your core plan.",
+          // 1. Block Free Users immediately
+          if (!userPlan || userPlan === "user_free") {
+            return res.status(403).json({
+              success: false,
+              message:
+                "Free users cannot buy single recipes. Please upgrade your core plan.",
+            });
+          }
+
+          // 2. Count how many single recipes this user has already bought
+          const purchasedCount = await paymentsCollection.countDocuments({
+            userId: userId,
+            paymentStatus: "succeeded",
           });
-        }
 
-        // 2. Count how many single recipes this user has already bought
-        const purchasedCount = await paymentsCollection.countDocuments({
-          userId: userId,
-          paymentStatus: "succeeded",
-        });
+          // 3. Enforce Tier Limits
+          if (userPlan === "user_pro" && purchasedCount >= 5) {
+            return res.status(403).json({
+              success: false,
+              message:
+                "Pro tier individual purchase cap reached (Max 5). Upgrade to Premium for a higher allocation.",
+            });
+          }
 
-        // 3. Enforce Tier Limits
-        if (userPlan === "user_pro" && purchasedCount >= 5) {
-          return res.status(403).json({
-            success: false,
-            message:
-              "Pro tier individual purchase cap reached (Max 5). Upgrade to Premium for a higher allocation.",
+          if (userPlan === "user_premium" && purchasedCount >= 20) {
+            return res.status(403).json({
+              success: false,
+              message:
+                "Premium tier single recipe purchase limit reached (Max 20).",
+            });
+          }
+
+          // 4. Record the approved transaction item
+          const paymentRecord = {
+            userId,
+            userEmail,
+            recipeId,
+            transactionId, // Provided by your payment gateway (like Stripe)
+            paymentStatus: "succeeded",
+            paidAt: new Date(),
+          };
+
+          const result = await paymentsCollection.insertOne(paymentRecord);
+
+          return res.status(201).json({
+            success: true,
+            message: "Recipe purchase successfully authorized!",
+            insertedId: result.insertedId,
           });
+        } catch (error) {
+          console.error("Payment registration error:", error);
+          return res
+            .status(500)
+            .json({ success: false, error: "Internal server error" });
         }
-
-        if (userPlan === "user_premium" && purchasedCount >= 20) {
-          return res.status(403).json({
-            success: false,
-            message:
-              "Premium tier single recipe purchase limit reached (Max 20).",
-          });
-        }
-
-        // 4. Record the approved transaction item
-        const paymentRecord = {
-          userId,
-          userEmail,
-          recipeId,
-          transactionId, // Provided by your payment gateway (like Stripe)
-          paymentStatus: "succeeded",
-          paidAt: new Date(),
-        };
-
-        const result = await paymentsCollection.insertOne(paymentRecord);
-
-        return res.status(201).json({
-          success: true,
-          message: "Recipe purchase successfully authorized!",
-          insertedId: result.insertedId,
-        });
-      } catch (error) {
-        console.error("Payment registration error:", error);
-        return res
-          .status(500)
-          .json({ success: false, error: "Internal server error" });
-      }
-    });
+      },
+    );
 
     //subcription related
     app.post("/api/subscriptions", async (req, res) => {
@@ -151,53 +217,67 @@ async function run() {
     });
 
     // Admin related api
-    app.patch("/api/recipes/:id/feature", async (req, res) => {
-      const { id } = await req.params;
-      try {
+    app.patch(
+      "/api/recipes/:id/feature",
+      verifyToken,
+      verifyAdmin,
+
+      async (req, res) => {
+        const { id } = await req.params;
+        try {
+          const query = {
+            _id: new ObjectId(id),
+          };
+          const recipe = await recipeCollection.findOne(query);
+          if (!recipe) {
+            return res.status(401).json({ error: "Recipe not found.." });
+          }
+          const featureState = !recipe.isFeatured;
+          await recipeCollection.updateOne(query, {
+            $set: {
+              isFeatured: featureState,
+            },
+          });
+          res.status(200).json({
+            success: true,
+            message: "Your feature request has been successfully added.",
+            isFeatured: featureState,
+          });
+        } catch (error) {
+          res.status(500).json({
+            error: error.message,
+          });
+        }
+      },
+    );
+
+    // users related api
+    app.get("/api/users", verifyToken, verifyAdmin, async (req, res) => {
+      console.log(req.user);
+
+      const result = await userCollection.find().toArray();
+
+      res.send(result);
+    });
+
+    app.patch(
+      "/api/users/:id/status",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+        const newStatusValue = req.body.status;
         const query = {
           _id: new ObjectId(id),
         };
-        const recipe = recipeCollection.findOne(query);
-        if (!recipe) {
-          return res.status(401).json({ error: "Recipe not found.." });
-        }
-        const featureState = !recipe.isFeatured;
-        await recipeCollection.updateOne(query, {
+        const result = await userCollection.updateOne(query, {
           $set: {
-            isFeatured: featureState,
+            status: newStatusValue,
           },
         });
-        res.status(200).json({
-          success: true,
-          message: "Your feature request has been successfully added.",
-          isFeatured: featureState,
-        });
-      } catch (error) {
-        res.status(500).json({
-          error: error.message,
-        });
-      }
-    });
-
-    // users related api
-    app.get("/api/users", async (req, res) => {
-      const result = await userCollection.find().toArray();
-      res.send(result);
-    });
-
-    app.patch("/api/users/:id/status", async (req, res) => {
-      const { id } = req.params;
-      const newStatusValue = req.body.status;
-      const query = {
-        _id: new ObjectId(id),
-      };
-      const result = await userCollection.updateOne(query, {
-        $set: {
-          status: newStatusValue,
-        },
-      });
-      res.send(result);
-    });
+        res.send(result);
+      },
+    );
 
     // recipes api related
     app.delete("/api/reports/:id", async (req, res) => {
@@ -209,7 +289,7 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/api/reports", async (req, res) => {
+    app.get("/api/reports", verifyToken, verifyAdmin, async (req, res) => {
       const result = await reportCollection.find().toArray();
       res.send(result);
     });
@@ -253,53 +333,57 @@ async function run() {
       }
     });
 
-    app.patch("/api/recipes/:id/favourite", async (req, res) => {
-      const { id } = req.params;
-      const { userId } = req.body;
-      if (!userId) {
-        return res
-          .status(401)
-          .json({ error: "Unauthorized access token missing." });
-      }
-      try {
-        const query = {
-          _id: new ObjectId(id),
-        };
-        const recipe = await recipeCollection.findOne(query);
-        if (!recipe) {
-          return res.status(404).json({ error: "Recipe not found." });
+    app.patch(
+      "/api/recipes/:id/favourite",
+
+      async (req, res) => {
+        const { id } = req.params;
+        const { userId } = req.body;
+        if (!userId) {
+          return res
+            .status(401)
+            .json({ error: "Unauthorized access token missing." });
         }
-        const favourite = recipe.favourite || [];
-        const isAlreadyFavourite = favourite.includes(userId);
-        let updateOperator;
-        if (isAlreadyFavourite) {
-          updateOperator = { $pull: { favourite: userId } };
-        } else {
-          updateOperator = {
-            $addToSet: {
-              favourite: userId,
-            },
+        try {
+          const query = {
+            _id: new ObjectId(id),
           };
+          const recipe = await recipeCollection.findOne(query);
+          if (!recipe) {
+            return res.status(404).json({ error: "Recipe not found." });
+          }
+          const favourite = recipe.favourite || [];
+          const isAlreadyFavourite = favourite.includes(userId);
+          let updateOperator;
+          if (isAlreadyFavourite) {
+            updateOperator = { $pull: { favourite: userId } };
+          } else {
+            updateOperator = {
+              $addToSet: {
+                favourite: userId,
+              },
+            };
+          }
+
+          await recipeCollection.updateOne(query, updateOperator);
+          const updateRecipe = await recipeCollection.findOne(query);
+          const favouriteArray = updateRecipe.favourite || [];
+          const absoluteCountAsNumber = favouriteArray.length; // Raw standard number
+
+          // 3. Store that definitive numerical length directly back into your field
+          await recipeCollection.updateOne(query, {
+            $set: { favouritesCount: absoluteCountAsNumber },
+          });
+          res.status(200).json({
+            success: true,
+            favoritesCount: favouriteArray.length,
+            isFavourited: favouriteArray.includes(userId),
+          });
+        } catch (error) {
+          res.status(500).json({ error: error.message });
         }
-
-        await recipeCollection.updateOne(query, updateOperator);
-        const updateRecipe = await recipeCollection.findOne(query);
-        const favouriteArray = updateRecipe.favourite || [];
-        const absoluteCountAsNumber = favouriteArray.length; // Raw standard number
-
-        // 3. Store that definitive numerical length directly back into your field
-        await recipeCollection.updateOne(query, {
-          $set: { favouritesCount: absoluteCountAsNumber },
-        });
-        res.status(200).json({
-          success: true,
-          favoritesCount: favouriteArray.length,
-          isFavourited: favouriteArray.includes(userId),
-        });
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
+      },
+    );
 
     app.patch("/api/recipes/:id/vote", async (req, res) => {
       const { id } = req.params;
@@ -337,7 +421,7 @@ async function run() {
       res.send(result);
     });
 
-    app.put("/api/myRecipes/:id", async (req, res) => {
+    app.put("/api/myRecipes/:id", verifyToken, verifyUser, async (req, res) => {
       try {
         const id = req.params.id.trim();
 
